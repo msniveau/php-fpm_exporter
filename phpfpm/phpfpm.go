@@ -16,8 +16,10 @@ package phpfpm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -155,25 +157,37 @@ func (p *Pool) Update() (err error) {
 	if err != nil {
 		return p.error(err)
 	}
+	resp := &http.Response{}
+	switch scheme {
+	case "http":
+		fallthrough
+	case "https":
+		resp, err = http.Get(fmt.Sprintf("%s://%s/%s?json&full", scheme, address, path))
+		if err != nil {
+			return err
+		}
+	case "tcp":
+		fcgi, err := fcgiclient.DialTimeout(scheme, address, time.Duration(3)*time.Second)
+		if err != nil {
+			return p.error(err)
+		}
 
-	fcgi, err := fcgiclient.DialTimeout(scheme, address, time.Duration(3)*time.Second)
-	if err != nil {
-		return p.error(err)
-	}
+		defer fcgi.Close()
 
-	defer fcgi.Close()
+		env := map[string]string{
+			"SCRIPT_FILENAME": path,
+			"SCRIPT_NAME":     path,
+			"SERVER_SOFTWARE": "go / php-fpm_exporter",
+			"REMOTE_ADDR":     "127.0.0.1",
+			"QUERY_STRING":    "json&full",
+		}
 
-	env := map[string]string{
-		"SCRIPT_FILENAME": path,
-		"SCRIPT_NAME":     path,
-		"SERVER_SOFTWARE": "go / php-fpm_exporter",
-		"REMOTE_ADDR":     "127.0.0.1",
-		"QUERY_STRING":    "json&full",
-	}
-
-	resp, err := fcgi.Get(env)
-	if err != nil {
-		return p.error(err)
+		resp, err = fcgi.Get(env)
+		if err != nil {
+			return p.error(err)
+		}
+	default:
+		return errors.New(fmt.Sprintf("unknown scheme: %s" ,scheme))
 	}
 
 	defer resp.Body.Close()
